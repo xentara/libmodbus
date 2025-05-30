@@ -340,7 +340,7 @@ compute_data_length_after_meta(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type,
     int length;
     modbus_compute_length_t compute_user_length;
 
-    need_more_data = FALSE;
+    *need_more_data = FALSE;
 
     if (msg_type == MSG_INDICATION) {
         compute_user_length = ctx->compute_indication_length;
@@ -381,7 +381,7 @@ compute_data_length_after_meta(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type,
         }
     }
 
-    if (!need_more_data) {
+    if (!*need_more_data) {
         length += ctx->backend->checksum_length;
     }
 
