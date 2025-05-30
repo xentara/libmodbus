@@ -125,13 +125,20 @@ int modbus_flush(modbus_t *ctx)
     return rc;
 }
 
+/* Checks whether a modbus function lies in one of the two ranges reserved for user-defined function codes */
+static int is_user_function_code(int fn_code)
+{
+    return (fn_code >= 65 && fn_code <= 72) || (fn_code >= 100 && fn_code <= 110);
+}
+
 /* Computes the length of the expected response including checksum */
 static unsigned int compute_response_length_from_request(modbus_t *ctx, uint8_t *req)
 {
     int length;
     const int offset = ctx->backend->header_length;
+    int function = req[offset];
 
-    switch (req[offset]) {
+    switch (function) {
     case MODBUS_FC_READ_COILS:
     case MODBUS_FC_READ_DISCRETE_INPUTS: {
         /* Header + nb values (code from write_bits) */
@@ -155,6 +162,10 @@ static unsigned int compute_response_length_from_request(modbus_t *ctx, uint8_t 
         length = 7;
         break;
     default:
+        /* for user defined function codes, we don't know the correct length */
+        if (is_user_function_code(function)) {
+            return MSG_LENGTH_UNDEFINED;
+        }
         length = 5;
     }
 
@@ -310,35 +321,57 @@ static uint8_t compute_meta_length_after_function(int function, msg_type_t msg_t
 
 /* Computes the length to read after the meta information (address, count, etc) */
 static int
-compute_data_length_after_meta(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type)
+compute_data_length_after_meta(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type, int msg_length, int *need_more_data)
 {
     int function = msg[ctx->backend->header_length];
+    int meta_start = ctx->backend->header_length + 1;
     int length;
+    modbus_compute_length_t compute_user_length;
+
+    need_more_data = FALSE;
 
     if (msg_type == MSG_INDICATION) {
-        switch (function) {
-        case MODBUS_FC_WRITE_MULTIPLE_COILS:
-        case MODBUS_FC_WRITE_MULTIPLE_REGISTERS:
-            length = msg[ctx->backend->header_length + 5];
-            break;
-        case MODBUS_FC_WRITE_AND_READ_REGISTERS:
-            length = msg[ctx->backend->header_length + 9];
-            break;
-        default:
-            length = 0;
+        compute_user_length = ctx->compute_indication_length;
+    } else {
+        compute_user_length = ctx->compute_confirmation_length;
+    }
+
+    if (compute_user_length != NULL && is_user_function_code(function)) {
+        length = compute_user_length(ctx, function, msg + meta_start, msg_length - meta_start, need_more_data);
+        if (length < 0) {
+            return -1;
+        }
+        if (length == 0) {
+            need_more_data = FALSE;
         }
     } else {
-        /* MSG_CONFIRMATION */
-        if (function <= MODBUS_FC_READ_INPUT_REGISTERS ||
-            function == MODBUS_FC_REPORT_SLAVE_ID ||
-            function == MODBUS_FC_WRITE_AND_READ_REGISTERS) {
-            length = msg[ctx->backend->header_length + 1];
+        if (msg_type == MSG_INDICATION) {
+            switch (function) {
+            case MODBUS_FC_WRITE_MULTIPLE_COILS:
+            case MODBUS_FC_WRITE_MULTIPLE_REGISTERS:
+                length = msg[ctx->backend->header_length + 5];
+                break;
+            case MODBUS_FC_WRITE_AND_READ_REGISTERS:
+                length = msg[ctx->backend->header_length + 9];
+                break;
+            default:
+                length = 0;
+            }
         } else {
-            length = 0;
+            /* MSG_CONFIRMATION */
+            if (function <= MODBUS_FC_READ_INPUT_REGISTERS ||
+                function == MODBUS_FC_REPORT_SLAVE_ID ||
+                function == MODBUS_FC_WRITE_AND_READ_REGISTERS) {
+                length = msg[ctx->backend->header_length + 1];
+            } else {
+                length = 0;
+            }
         }
     }
 
-    length += ctx->backend->checksum_length;
+    if (!need_more_data) {
+        length += ctx->backend->checksum_length;
+    }
 
     return length;
 }
@@ -367,6 +400,7 @@ int _modbus_receive_msg(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type)
 #ifdef _WIN32
     int wsa_err;
 #endif
+    int need_more_meta;
 
     if (ctx->debug) {
         if (msg_type == MSG_INDICATION) {
@@ -494,13 +528,19 @@ int _modbus_receive_msg(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type)
                     break;
                 } /* else switches straight to the next step */
             case _STEP_META:
-                length_to_read = compute_data_length_after_meta(ctx, msg, msg_type);
+                length_to_read = compute_data_length_after_meta(ctx, msg, msg_type, msg_length, &need_more_meta);
+                if (length_to_read < 0) {
+                    errno = EINVAL;
+                    return -1;
+                }
                 if ((msg_length + length_to_read) > ctx->backend->max_adu_length) {
                     errno = EMBBADDATA;
                     _error_print(ctx, "too many data");
                     return -1;
                 }
-                step = _STEP_DATA;
+                if (!need_more_meta) {
+                    step = _STEP_DATA;
+                }
                 break;
             default:
                 break;
@@ -1768,6 +1808,9 @@ void _modbus_init_common(modbus_t *ctx)
     ctx->byte_timeout.tv_sec = 0;
     ctx->byte_timeout.tv_usec = _BYTE_TIMEOUT;
 
+    ctx->compute_indication_length = NULL;
+    ctx->compute_confirmation_length = NULL;
+
     ctx->indication_timeout.tv_sec = 0;
     ctx->indication_timeout.tv_usec = 0;
 }
@@ -1902,6 +1945,54 @@ int modbus_set_indication_timeout(modbus_t *ctx, uint32_t to_sec, uint32_t to_us
 
     ctx->indication_timeout.tv_sec = to_sec;
     ctx->indication_timeout.tv_usec = to_usec;
+    return 0;
+}
+
+int
+modbus_get_compute_indication_length(modbus_t *ctx, modbus_compute_length_t *compute_length)
+{
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    *compute_length = ctx->compute_indication_length;
+    return 0;
+}
+
+int
+modbus_set_compute_indication_length(modbus_t *ctx, modbus_compute_length_t compute_length)
+{
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    ctx->compute_indication_length = compute_length;
+    return 0;
+}
+
+int
+modbus_get_compute_confirmation_length(modbus_t *ctx, modbus_compute_length_t *compute_length)
+{
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    *compute_length = ctx->compute_confirmation_length;
+    return 0;
+}
+
+int
+modbus_set_compute_confirmation_length(modbus_t *ctx, modbus_compute_length_t compute_length)
+{
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    ctx->compute_confirmation_length = compute_length;
     return 0;
 }
 

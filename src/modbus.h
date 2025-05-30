@@ -188,6 +188,12 @@ typedef enum {
     MODBUS_QUIRK_ALL = 0xFF
 } modbus_quirks;
 
+typedef int (*modbus_compute_length_t)(modbus_t *ctx,
+                                       int function,
+                                       const uint8_t *data,
+                                       int data_length,
+                                       int *need_more_data);
+
 MODBUS_API int modbus_set_slave(modbus_t *ctx, int slave);
 MODBUS_API int modbus_get_slave(modbus_t *ctx);
 MODBUS_API int modbus_set_error_recovery(modbus_t *ctx,
@@ -208,6 +214,16 @@ MODBUS_API int
 modbus_get_indication_timeout(modbus_t *ctx, uint32_t *to_sec, uint32_t *to_usec);
 MODBUS_API int
 modbus_set_indication_timeout(modbus_t *ctx, uint32_t to_sec, uint32_t to_usec);
+
+MODBUS_API int
+modbus_get_compute_indication_length(modbus_t *ctx, modbus_compute_length_t *compute_length);
+MODBUS_API int
+modbus_set_compute_indication_length(modbus_t *ctx, modbus_compute_length_t compute_length);
+
+MODBUS_API int
+modbus_get_compute_confirmation_length(modbus_t *ctx, modbus_compute_length_t *compute_length);
+MODBUS_API int
+modbus_set_compute_confirmation_length(modbus_t *ctx, modbus_compute_length_t compute_length);
 
 MODBUS_API int modbus_get_header_length(modbus_t *ctx);
 
