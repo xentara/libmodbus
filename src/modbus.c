@@ -281,9 +281,21 @@ int modbus_send_raw_request(modbus_t *ctx, const uint8_t *raw_req, int raw_req_l
  */
 
 /* Computes the length to read after the function received */
-static uint8_t compute_meta_length_after_function(int function, msg_type_t msg_type)
+static uint8_t compute_meta_length_after_function(modbus_t *ctx, int function, msg_type_t msg_type)
 {
     int length;
+    modbus_compute_length_t compute_user_length;
+
+    if (msg_type == MSG_INDICATION) {
+        compute_user_length = ctx->compute_indication_length;
+    } else {
+        compute_user_length = ctx->compute_confirmation_length;
+    }
+
+    if (compute_user_length != NULL && is_user_function_code(function)) {
+        /* Go straight to meta step */ 
+        return 0;
+    }
 
     if (msg_type == MSG_INDICATION) {
         if (function <= MODBUS_FC_WRITE_SINGLE_REGISTER) {
@@ -521,7 +533,7 @@ int _modbus_receive_msg(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type)
             switch (step) {
             case _STEP_FUNCTION:
                 /* Function code position */
-                length_to_read = compute_meta_length_after_function(
+                length_to_read = compute_meta_length_after_function(ctx,
                     msg[ctx->backend->header_length], msg_type);
                 if (length_to_read != 0) {
                     step = _STEP_META;
