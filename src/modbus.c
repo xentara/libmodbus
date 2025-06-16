@@ -354,7 +354,7 @@ compute_data_length_after_meta(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type,
             return -1;
         }
         if (length == 0) {
-            need_more_data = FALSE;
+            *need_more_data = FALSE;
         }
     } else {
         if (msg_type == MSG_INDICATION) {
