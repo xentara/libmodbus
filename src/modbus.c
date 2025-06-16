@@ -161,6 +161,9 @@ static unsigned int compute_response_length_from_request(modbus_t *ctx, uint8_t 
     case MODBUS_FC_MASK_WRITE_REGISTER:
         length = 7;
         break;
+    case MODBUS_FC_ENCAPSULATED_INTERFACE_TRANSPORT:
+        /* the correct length is only known by the MEI length callback */
+        return MSG_LENGTH_UNDEFINED;
     default:
         /* for user defined function codes, we don't know the correct length */
         if (is_user_function_code(function)) {
@@ -285,16 +288,22 @@ static uint8_t compute_meta_length_after_function(modbus_t *ctx, int function, m
 {
     int length;
     modbus_compute_length_t compute_user_length;
+    modbus_compute_mei_length_t compute_mei_length;
 
     if (msg_type == MSG_INDICATION) {
         compute_user_length = ctx->compute_indication_length;
+        compute_mei_length = ctx->compute_indication_mei_length;
     } else {
         compute_user_length = ctx->compute_confirmation_length;
+        compute_mei_length = ctx->compute_confirmation_mei_length;
     }
 
     if (compute_user_length != NULL && is_user_function_code(function)) {
         /* Go straight to meta step */ 
         return 0;
+    } else if (compute_mei_length != NULL && function == MODBUS_FC_ENCAPSULATED_INTERFACE_TRANSPORT) {
+        /* We need one byte for the MEI type */ 
+        return 1;
     }
 
     if (msg_type == MSG_INDICATION) {
@@ -307,6 +316,8 @@ static uint8_t compute_meta_length_after_function(modbus_t *ctx, int function, m
             length = 6;
         } else if (function == MODBUS_FC_WRITE_AND_READ_REGISTERS) {
             length = 9;
+        } else if (function == MODBUS_FC_ENCAPSULATED_INTERFACE_TRANSPORT) {
+            length = 1;
         } else {
             /* MODBUS_FC_READ_EXCEPTION_STATUS, MODBUS_FC_REPORT_SLAVE_ID */
             length = 0;
@@ -339,17 +350,32 @@ compute_data_length_after_meta(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type,
     int meta_start = ctx->backend->header_length + 1;
     int length;
     modbus_compute_length_t compute_user_length;
+    modbus_compute_mei_length_t compute_mei_length;
 
     *need_more_data = FALSE;
 
     if (msg_type == MSG_INDICATION) {
         compute_user_length = ctx->compute_indication_length;
+        compute_mei_length = ctx->compute_indication_mei_length;
     } else {
         compute_user_length = ctx->compute_confirmation_length;
+        compute_mei_length = ctx->compute_confirmation_mei_length;
     }
 
     if (compute_user_length != NULL && is_user_function_code(function)) {
         length = compute_user_length(ctx, function, msg + meta_start, msg_length - meta_start, need_more_data);
+        if (length < 0) {
+            return -1;
+        }
+        if (length == 0) {
+            *need_more_data = FALSE;
+        }
+    } else if (compute_mei_length != NULL && function == MODBUS_FC_ENCAPSULATED_INTERFACE_TRANSPORT) {
+        length = compute_mei_length(ctx,
+                                     msg[meta_start],
+                                     msg + meta_start + 1,
+                                     msg_length - meta_start - 1,
+                                     need_more_data);
         if (length < 0) {
             return -1;
         }
@@ -721,6 +747,13 @@ static int check_confirmation(modbus_t *ctx, uint8_t *req, uint8_t *rsp, int rsp
             }
             /* 1 Write functions & others */
             req_nb_value = rsp_nb_value = 1;
+            break;
+        case MODBUS_FC_ENCAPSULATED_INTERFACE_TRANSPORT:
+            /* MEI in request and response must be equal */
+            if (rsp[offset + 1] != req[offset + 1]) {
+                resp_addr_ok = FALSE;
+            }
+            req_nb_value = rsp_nb_value = rsp_length - offset - 2;
             break;
         default:
             /* 1 Write functions & others */
@@ -1804,6 +1837,65 @@ int modbus_report_slave_id(modbus_t *ctx, int max_dest, uint8_t *dest)
     return rc;
 }
 
+int modbus_encapsulated_interface_transport(modbus_t *ctx,
+                                            int mei_type,
+                                            const uint8_t *src,
+                                            int src_length,
+                                            int max_dest,
+                                            uint8_t *dest)
+{
+    int rc;
+    int req_length;
+    uint8_t req[MAX_MESSAGE_LENGTH];
+
+    if (ctx == NULL ||
+        mei_type < 0 || mei_type > UCHAR_MAX ||
+        src_length < 0 || src_length > (MODBUS_MAX_PDU_LENGTH - 2) ||
+        max_dest <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    req_length =
+        ctx->backend->build_request_basis(ctx, MODBUS_FC_ENCAPSULATED_INTERFACE_TRANSPORT, 0, 0, req);
+
+    /* HACKISH, addr and count are not used */
+    req_length -= 4;
+
+    /* add the MEI type */
+    req[req_length++] = mei_type;
+
+    /* add the data */
+    if (src_length > 0) {
+        /* Copy data after MEI type */
+        memcpy(req + req_length, src, src_length);
+        req_length += src_length;
+    }
+
+    rc = send_msg(ctx, req, req_length);
+    if (rc > 0) {
+        unsigned int offset;
+        int dest_length;
+        uint8_t rsp[MAX_MESSAGE_LENGTH];
+
+        rc = _modbus_receive_msg(ctx, rsp, MSG_CONFIRMATION);
+        if (rc == -1)
+            return -1;
+
+        rc = check_confirmation(ctx, req, rsp, rc);
+        if (rc == -1)
+            return -1;
+
+        offset = ctx->backend->header_length + 2;
+
+        /* Truncate the data to max_dest */
+        dest_length = (rc <= max_dest ) ? rc : max_dest;
+        memcpy(dest, rsp + offset, dest_length);
+    }
+
+    return rc;
+}
+
 void _modbus_init_common(modbus_t *ctx)
 {
     /* Slave and socket are initialized to -1 */
@@ -1822,6 +1914,9 @@ void _modbus_init_common(modbus_t *ctx)
 
     ctx->compute_indication_length = NULL;
     ctx->compute_confirmation_length = NULL;
+
+    ctx->compute_indication_mei_length = NULL;
+    ctx->compute_confirmation_mei_length = NULL;
 
     ctx->indication_timeout.tv_sec = 0;
     ctx->indication_timeout.tv_usec = 0;
@@ -2008,6 +2103,53 @@ modbus_set_compute_confirmation_length(modbus_t *ctx, modbus_compute_length_t co
     return 0;
 }
 
+int
+modbus_get_compute_indication_mei_length(modbus_t *ctx, modbus_compute_mei_length_t *compute_mei_length)
+{
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    *compute_mei_length = ctx->compute_indication_mei_length;
+    return 0;
+}
+
+int
+modbus_set_compute_indication_mei_length(modbus_t *ctx, modbus_compute_mei_length_t compute_mei_length)
+{
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    ctx->compute_indication_mei_length = compute_mei_length;
+    return 0;
+}
+
+int
+modbus_get_compute_confirmation_mei_length(modbus_t *ctx, modbus_compute_mei_length_t *compute_mei_length)
+{
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    *compute_mei_length = ctx->compute_confirmation_mei_length;
+    return 0;
+}
+
+int
+modbus_set_compute_confirmation_mei_length(modbus_t *ctx, modbus_compute_mei_length_t compute_mei_length)
+{
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    ctx->compute_confirmation_mei_length = compute_mei_length;
+    return 0;
+}
 int modbus_get_header_length(modbus_t *ctx)
 {
     if (ctx == NULL) {

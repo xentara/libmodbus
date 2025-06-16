@@ -106,6 +106,8 @@ struct _modbus {
     struct timeval indication_timeout;
     modbus_compute_length_t compute_indication_length;
     modbus_compute_length_t compute_confirmation_length;
+    modbus_compute_mei_length_t compute_indication_mei_length;
+    modbus_compute_mei_length_t compute_confirmation_mei_length;
     const modbus_backend_t *backend;
     void *backend_data;
 };

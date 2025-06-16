@@ -60,18 +60,23 @@ MODBUS_BEGIN_DECLS
 #endif
 
 /* Modbus function codes */
-#define MODBUS_FC_READ_COILS               0x01
-#define MODBUS_FC_READ_DISCRETE_INPUTS     0x02
-#define MODBUS_FC_READ_HOLDING_REGISTERS   0x03
-#define MODBUS_FC_READ_INPUT_REGISTERS     0x04
-#define MODBUS_FC_WRITE_SINGLE_COIL        0x05
-#define MODBUS_FC_WRITE_SINGLE_REGISTER    0x06
-#define MODBUS_FC_READ_EXCEPTION_STATUS    0x07
-#define MODBUS_FC_WRITE_MULTIPLE_COILS     0x0F
-#define MODBUS_FC_WRITE_MULTIPLE_REGISTERS 0x10
-#define MODBUS_FC_REPORT_SLAVE_ID          0x11
-#define MODBUS_FC_MASK_WRITE_REGISTER      0x16
-#define MODBUS_FC_WRITE_AND_READ_REGISTERS 0x17
+#define MODBUS_FC_READ_COILS                       0x01
+#define MODBUS_FC_READ_DISCRETE_INPUTS             0x02
+#define MODBUS_FC_READ_HOLDING_REGISTERS           0x03
+#define MODBUS_FC_READ_INPUT_REGISTERS             0x04
+#define MODBUS_FC_WRITE_SINGLE_COIL                0x05
+#define MODBUS_FC_WRITE_SINGLE_REGISTER            0x06
+#define MODBUS_FC_READ_EXCEPTION_STATUS            0x07
+#define MODBUS_FC_WRITE_MULTIPLE_COILS             0x0F
+#define MODBUS_FC_WRITE_MULTIPLE_REGISTERS         0x10
+#define MODBUS_FC_REPORT_SLAVE_ID                  0x11
+#define MODBUS_FC_MASK_WRITE_REGISTER              0x16
+#define MODBUS_FC_WRITE_AND_READ_REGISTERS         0x17
+#define MODBUS_FC_ENCAPSULATED_INTERFACE_TRANSPORT 0x2B
+
+/* Modbus MEI codes for the encapsulated interface transport */
+#define MODBUS_MEI_CANOPEN_PDU 0x0D
+#define MODBUS_MEI_READ_DEVICE_IDENTIFICATION 0x0E
 
 #define MODBUS_BROADCAST_ADDRESS 0
 
@@ -194,6 +199,12 @@ typedef int (*modbus_compute_length_t)(modbus_t *ctx,
                                        int data_length,
                                        int *need_more_data);
 
+typedef int (*modbus_compute_mei_length_t)(modbus_t *ctx,
+                                           int mei_type,
+                                           const uint8_t *data,
+                                           int data_length,
+                                           int *need_more_data);
+
 MODBUS_API int modbus_set_slave(modbus_t *ctx, int slave);
 MODBUS_API int modbus_get_slave(modbus_t *ctx);
 MODBUS_API int modbus_set_error_recovery(modbus_t *ctx,
@@ -224,6 +235,16 @@ MODBUS_API int
 modbus_get_compute_confirmation_length(modbus_t *ctx, modbus_compute_length_t *compute_length);
 MODBUS_API int
 modbus_set_compute_confirmation_length(modbus_t *ctx, modbus_compute_length_t compute_length);
+
+MODBUS_API int
+modbus_get_compute_indication_mei_length(modbus_t *ctx, modbus_compute_mei_length_t *compute_mei_length);
+MODBUS_API int
+modbus_set_compute_indication_mei_length(modbus_t *ctx, modbus_compute_mei_length_t compute_mei_length);
+
+MODBUS_API int
+modbus_get_compute_confirmation_mei_length(modbus_t *ctx, modbus_compute_mei_length_t *compute_mei_length);
+MODBUS_API int
+modbus_set_compute_confirmation_mei_length(modbus_t *ctx, modbus_compute_mei_length_t compute_mei_length);
 
 MODBUS_API int modbus_get_header_length(modbus_t *ctx);
 
@@ -257,6 +278,13 @@ MODBUS_API int modbus_write_and_read_registers(modbus_t *ctx,
                                                int read_nb,
                                                uint16_t *dest);
 MODBUS_API int modbus_report_slave_id(modbus_t *ctx, int max_dest, uint8_t *dest);
+
+MODBUS_API int modbus_encapsulated_interface_transport(modbus_t *ctx,
+                                                       int mei_type,
+                                                       const uint8_t *src,
+                                                       int src_length,
+                                                       int max_dest,
+                                                       uint8_t *dest);
 
 MODBUS_API modbus_mapping_t *
 modbus_mapping_new_start_address(unsigned int start_bits,
