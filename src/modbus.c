@@ -753,7 +753,9 @@ static int check_confirmation(modbus_t *ctx, uint8_t *req, uint8_t *rsp, int rsp
             if (rsp[offset + 1] != req[offset + 1]) {
                 resp_addr_ok = FALSE;
             }
-            req_nb_value = rsp_nb_value = rsp_length - offset - 2;
+            req_nb_value = rsp_nb_value = rsp_length - offset
+                - 2 /* function and MEI code */
+                - ctx->backend->checksum_length;
             break;
         default:
             /* 1 Write functions & others */
